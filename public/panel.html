@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Announce Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#050507;--surface:#0d0d12;--card:#12121a;--card2:#191924;
+  --border:#1e1e2a;--border2:#2a2a3a;
+  --pk:#ff2d95;--pk2:#c91870;--pk3:#ff7eb3;
+  --pk-glow:rgba(255,45,149,.22);--pk-dim:rgba(255,45,149,.08);--pk-border:rgba(255,45,149,.25);
+  --green:#22c55e;--yellow:#f59e0b;--red:#f43f5e;--blue:#5865f2;
+  --text:#fff;--text2:#9898b8;--text3:#50505e;--radius:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Noto Sans Thai',sans-serif;font-size:14px;min-height:100vh;display:flex;flex-direction:column}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 28px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+.topbar-icon{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--pk),var(--pk2));display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 16px var(--pk-glow)}
+.topbar-title{font-family:'Syne',sans-serif;font-size:17px;font-weight:800}
+.topbar-sub{font-size:11px;color:var(--text3);margin-left:auto;font-family:'DM Mono',monospace}
+.bot-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);display:inline-block;margin-right:5px}
+.bot-dot.off{background:var(--text3);box-shadow:none}
+
+.tabs{display:flex;gap:4px;padding:18px 28px 0;border-bottom:1px solid var(--border)}
+.tab{padding:10px 20px;font-size:13px;font-weight:700;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:.15s;border-radius:8px 8px 0 0}
+.tab:hover{color:var(--text2)}
+.tab.on{color:var(--pk3);border-bottom-color:var(--pk)}
+
+.main{flex:1;padding:28px;max-width:900px;margin:0 auto;width:100%}
+.tab-body{display:none}.tab-body.on{display:block}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:18px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--pk-border),transparent)}
+.card-head{display:flex;align-items:center;gap:8px;margin-bottom:18px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--pk3)}
+
+.field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+.field label{font-size:10.5px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.8px}
+.inp,.field input,.field select,.field textarea{background:var(--bg);border:1px solid var(--border2);border-radius:11px;color:var(--text);padding:12px 14px;font-family:inherit;font-size:14px;outline:none;width:100%;resize:vertical}
+.inp:focus,.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--pk);box-shadow:0 0 0 3px var(--pk-glow)}
+.field select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%23ff2d95' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.hint{font-size:11px;color:var(--text3);margin-top:4px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 24px;border-radius:11px;border:none;cursor:pointer;font-weight:700;font-family:inherit;font-size:14px;white-space:nowrap;transition:.18s}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-pk{background:linear-gradient(135deg,var(--pk),var(--pk2));color:#fff;box-shadow:0 4px 14px var(--pk-glow)}
+.btn-pk:hover:not(:disabled){box-shadow:0 6px 20px var(--pk-glow)}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text2)}
+.btn-ghost:hover:not(:disabled){border-color:var(--pk3);color:var(--pk3)}
+.btn-danger{background:rgba(244,63,94,.12);border:1px solid rgba(244,63,94,.25);color:var(--red)}
+.btn-danger:hover{background:rgba(244,63,94,.22)}
+.btn-sm{padding:8px 14px;font-size:12px;border-radius:9px}
+
+/* COLOR PICKER */
+.color-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.color-chip{width:28px;height:28px;border-radius:8px;cursor:pointer;border:2px solid transparent;transition:.15s}
+.color-chip:hover,.color-chip.sel{border-color:#fff;transform:scale(1.15)}
+.color-custom{display:flex;align-items:center;gap:8px;margin-top:8px}
+.color-custom input[type="color"]{width:36px;height:36px;border:none;background:none;cursor:pointer;border-radius:8px;padding:2px}
+
+/* UPLOAD ZONE */
+.upload-zone{border:2px dashed var(--border2);border-radius:14px;padding:32px;text-align:center;cursor:pointer;transition:.2s;color:var(--text3)}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--pk3);background:var(--pk-dim);color:var(--pk3)}
+.upload-zone-icon{font-size:32px;margin-bottom:8px}
+.file-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.file-item{display:flex;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:10px 14px}
+.file-icon{font-size:18px;flex-shrink:0}
+.file-info{flex:1;min-width:0}
+.file-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-size{font-size:11px;color:var(--text3)}
+.file-del{background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;border-radius:6px}
+.file-del:hover{color:var(--red);background:rgba(244,63,94,.12)}
+
+/* EMBED PREVIEW */
+.dc-wrap{background:#1e1f22;border-radius:12px;padding:18px 20px}
+.dc-row{display:flex;gap:12px}
+.dc-av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--pk),var(--pk2));display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;flex-shrink:0}
+.dc-body{flex:1;min-width:0}
+.dc-name{font-size:14px;font-weight:700;color:#fff;margin-bottom:4px}
+.dc-embed{border-left:4px solid var(--blue);background:#2b2d31;border-radius:4px;padding:14px 16px;margin-top:8px}
+.dc-etitle{font-size:15px;font-weight:700;color:#fff;margin-bottom:5px}
+.dc-edesc{font-size:13px;color:#dbdee1;white-space:pre-wrap;word-break:break-word}
+.dc-img{margin-top:10px;border-radius:6px;overflow:hidden;display:none}
+.dc-img img{width:100%;max-height:220px;object-fit:cover;display:block}
+.dc-plain{font-size:14px;color:#dbdee1;white-space:pre-wrap;word-break:break-word;margin-top:4px}
+.dc-mention{color:#e0e3ff;background:rgba(88,101,242,.28);border-radius:3px;padding:0 3px}
+
+/* SCHEDULE LIST */
+.sched-item{display:flex;align-items:center;gap:12px;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px 18px;margin-bottom:10px}
+.sched-id{font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);flex-shrink:0}
+.sched-info{flex:1;min-width:0}
+.sched-time{font-size:12px;color:var(--pk3);font-weight:700}
+.sched-ch{font-size:13px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* TOGGLE */
+.sw{position:relative;width:42px;height:23px;cursor:pointer;flex-shrink:0}
+.sw input{opacity:0;width:0;height:0;position:absolute}
+.sw-t{position:absolute;inset:0;background:var(--border2);border-radius:12px;transition:.25s}
+.sw input:checked+.sw-t{background:linear-gradient(90deg,var(--pk2),var(--pk))}
+.sw-th{position:absolute;top:3px;left:3px;width:17px;height:17px;background:#fff;border-radius:50%;transition:.25s;pointer-events:none}
+.sw input:checked~.sw-th{left:22px}
+.tr{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+.tr:last-child{border-bottom:none}
+.tr-lbl{font-size:13.5px}.tr-sub{font-size:11px;color:var(--text3);margin-top:2px}
+
+/* TOAST */
+.toast{position:fixed;bottom:24px;right:24px;z-index:9999;padding:12px 22px;border-radius:12px;font-weight:700;font-size:13px;transform:translateY(80px) scale(.95);transition:.3s cubic-bezier(.34,1.56,.64,1);background:var(--surface);border:1px solid var(--pk);color:var(--pk3);box-shadow:0 8px 30px rgba(0,0,0,.5);pointer-events:none}
+.toast.on{transform:translateY(0) scale(1)}
+.toast.ok{border-color:var(--green);color:var(--green)}
+.toast.err{border-color:var(--red);color:var(--red)}
+.toast.info{border-color:var(--blue);color:#7b8fff}
+
+code{background:var(--card2);padding:1px 6px;border-radius:5px;font-family:'DM Mono',monospace;font-size:12px}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:10px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-icon">📣</div>
+  <div>
+    <div class="topbar-title">Announce Panel</div>
+    <div style="font-size:11px;color:var(--text3)" id="bot-tag">กำลังเชื่อมต่อ...</div>
+  </div>
+  <div class="topbar-sub"><span class="bot-dot off" id="bot-dot"></span><span id="bot-status">Offline</span></div>
+</div>
+
+<div class="tabs">
+  <div class="tab on" onclick="switchTab('compose',this)">📝 สร้างประกาศ</div>
+  <div class="tab" onclick="switchTab('scheduled',this)">📅 กำหนดเวลา</div>
+</div>
+
+<div class="main">
+
+<!-- COMPOSE TAB -->
+<div id="tab-compose" class="tab-body on">
+  <div class="g2" style="margin-bottom:18px">
+    <div class="field">
+      <label>Server (Guild)</label>
+      <select id="sel-guild" onchange="loadChannels()"><option value="">— เลือก Server —</option></select>
+    </div>
+    <div class="field">
+      <label>ช่องปลายทาง</label>
+      <select id="sel-channel"><option value="">— เลือก Channel —</option></select>
+    </div>
+  </div>
+
+  <!-- MENTION -->
+  <div class="card">
+    <div class="card-head">📢 Mention</div>
+    <div class="g2">
+      <div>
+        <div class="tr">
+          <div><div class="tr-lbl">@everyone</div><div class="tr-sub">mention ทุกคนใน server</div></div>
+          <label class="sw"><input type="checkbox" id="chk-everyone" onchange="updateMentionPreview()"><span class="sw-t"></span><span class="sw-th"></span></label>
+        </div>
+        <div class="tr">
+          <div><div class="tr-lbl">@here</div><div class="tr-sub">mention คนที่ online อยู่</div></div>
+          <label class="sw"><input type="checkbox" id="chk-here" onchange="updateMentionPreview()"><span class="sw-t"></span><span class="sw-th"></span></label>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label>Mention Role (ใส่ Role ID)</label>
+        <select id="sel-role" onchange="updateMentionPreview()"><option value="">— ไม่ mention role —</option></select>
+        <div class="hint">หรือพิมพ์ Role ID เองด้านล่าง</div>
+        <input type="text" class="inp" id="inp-mention-custom" placeholder="Role ID (ไม่บังคับ)" oninput="updateMentionPreview()" style="margin-top:8px">
+      </div>
+    </div>
+  </div>
+
+  <!-- MESSAGE / EMBED -->
+  <div class="card">
+    <div class="card-head">✉️ ข้อความ & Embed</div>
+    <div class="tr" style="margin-bottom:16px">
+      <div><div class="tr-lbl">ส่งแบบ Embed สวยงาม</div><div class="tr-sub">มีกรอบสี, หัวข้อ, ข้อความ</div></div>
+      <label class="sw"><input type="checkbox" id="chk-embed" checked onchange="toggleEmbed()"><span class="sw-t"></span><span class="sw-th"></span></label>
+    </div>
+
+    <div id="embed-fields">
+      <div class="g2">
+        <div class="field">
+          <label>หัวข้อ Embed</label>
+          <input type="text" class="inp" id="inp-title" placeholder="หัวข้อประกาศ" oninput="updatePreview()">
+        </div>
+        <div class="field">
+          <label>Footer</label>
+          <input type="text" class="inp" id="inp-footer" placeholder="ข้อความด้านล่าง embed" oninput="updatePreview()">
+        </div>
+      </div>
+      <div class="field">
+        <label>ข้อความใน Embed</label>
+        <textarea class="inp" id="inp-embeddesc" rows="4" placeholder="เนื้อหาประกาศ..." oninput="updatePreview()"></textarea>
+      </div>
+      <div class="field">
+        <label>สี Embed</label>
+        <div class="color-row" id="color-presets"></div>
+        <div class="color-custom">
+          <input type="color" id="color-picker" value="#5865f2" oninput="setColor(this.value)">
+          <input type="text" class="inp" id="color-hex" value="#5865f2" placeholder="#5865f2" oninput="setColor(this.value)" style="width:120px">
+        </div>
+      </div>
+      <div class="g2">
+        <div class="field">
+          <label>Thumbnail URL (รูปมุมขวา)</label>
+          <input type="text" class="inp" id="inp-thumbnail" placeholder="https://..." oninput="updatePreview()">
+        </div>
+        <div class="field">
+          <label>Image URL (รูปใหญ่)</label>
+          <input type="text" class="inp" id="inp-imageurl" placeholder="https://..." oninput="updatePreview()">
+        </div>
+      </div>
+    </div>
+
+    <div id="plain-fields" style="display:none">
+      <div class="field">
+        <label>ข้อความ</label>
+        <textarea class="inp" id="inp-message" rows="5" placeholder="พิมพ์ข้อความประกาศ..." oninput="updatePreview()"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE UPLOAD -->
+  <div class="card">
+    <div class="card-head">📎 แนบไฟล์ / รูปภาพ</div>
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+      <div class="upload-zone-icon">📁</div>
+      <div style="font-size:14px;font-weight:700;margin-bottom:4px">คลิกหรือลากไฟล์มาวางที่นี่</div>
+      <div style="font-size:12px">รองรับ รูปภาพ, PDF, ไฟล์ทุกชนิด (สูงสุด 25MB/ไฟล์)</div>
+    </div>
+    <input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(this.files)">
+    <div class="file-list" id="file-list"></div>
+  </div>
+
+  <!-- SCHEDULE -->
+  <div class="card">
+    <div class="card-head">⏰ กำหนดเวลาส่ง</div>
+    <div class="tr" style="margin-bottom:16px">
+      <div><div class="tr-lbl">กำหนดเวลา</div><div class="tr-sub">ส่งประกาศในเวลาที่กำหนด (เวลาไทย UTC+7)</div></div>
+      <label class="sw"><input type="checkbox" id="chk-schedule" onchange="toggleSchedule()"><span class="sw-t"></span><span class="sw-th"></span></label>
+    </div>
+    <div id="schedule-fields" style="display:none">
+      <div class="field">
+        <label>วันและเวลา (เวลาไทย)</label>
+        <input type="datetime-local" class="inp" id="inp-schedule">
+        <div class="hint">เวลาไทย UTC+7 — บอทจะส่งประกาศตามเวลานี้โดยอัตโนมัติ</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PREVIEW -->
+  <div class="card">
+    <div class="card-head">👁️ ตัวอย่าง</div>
+    <div class="dc-wrap">
+      <div class="dc-row">
+        <div class="dc-av" id="prev-av">📣</div>
+        <div class="dc-body">
+          <div class="dc-name">Announce Bot <span style="font-size:10px;background:#5865f2;color:#fff;border-radius:4px;padding:1px 5px;font-weight:700">BOT</span></div>
+          <div id="prev-mention" style="font-size:13px;margin-top:2px"></div>
+          <div id="prev-plain" class="dc-plain" style="display:none"></div>
+          <div class="dc-embed" id="prev-embed" style="border-left-color:#5865f2">
+            <div id="prev-title" class="dc-etitle" style="display:none"></div>
+            <div id="prev-desc" class="dc-edesc"></div>
+            <div class="dc-img" id="prev-img"><img id="prev-img-el" src="" alt=""></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SEND BUTTON -->
+  <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px">
+    <button class="btn btn-ghost" onclick="clearForm()">🗑️ ล้างฟอร์ม</button>
+    <button class="btn btn-pk" id="btn-send" onclick="sendAnnouncement()">📣 ส่งประกาศ</button>
+  </div>
+</div>
+
+<!-- SCHEDULED TAB -->
+<div id="tab-scheduled" class="tab-body">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+    <div style="font-size:15px;font-weight:700">ประกาศที่กำหนดเวลาไว้</div>
+    <button class="btn btn-ghost btn-sm" onclick="loadScheduled()">🔄 รีเฟรช</button>
+  </div>
+  <div id="sched-list"><div style="color:var(--text3);font-size:13px">กำลังโหลด...</div></div>
+</div>
+
+</div><!-- end main -->
+
+<div id="toast" class="toast"></div>
+
+<script>
+const SECRET = new URLSearchParams(location.search).get('secret') || '';
+if (!SECRET) {
+  document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px"><div style="font-size:48px">🔒</div><div style="font-family:Syne,sans-serif;font-size:20px;font-weight:800">ไม่มีสิทธิ์เข้าถึง</div><div style="color:#50505e;font-size:13px">ใช้คำสั่ง /announce-panel ใน Discord เพื่อรับลิงก์</div></div>';
+}
+
+// ── STATE ──
+var guilds = [];
+var channels = [];
+var roles = [];
+var uploadedFiles = []; // {filename, originalname, size, mimetype, url}
+var selectedColor = '#5865f2';
+
+// ── API ──
+async function api(method, path, body) {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'x-panel-secret': SECRET },
+      body: body ? JSON.stringify(body) : null,
+    });
+    return await res.json();
+  } catch(e) { return null; }
+}
+
+// ── TOAST ──
+function toast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast on' + (type ? ' ' + type : '');
+  clearTimeout(t._t); t._t = setTimeout(() => t.className = 'toast', 3200);
+}
+
+// ── TABS ──
+function switchTab(id, el) {
+  document.querySelectorAll('.tab-body').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  document.getElementById('tab-' + id).classList.add('on');
+  el.classList.add('on');
+  if (id === 'scheduled') loadScheduled();
+}
+
+// ── INIT ──
+async function init() {
+  // check status
+  const st = await fetch('/api/status').then(r => r.json()).catch(() => null);
+  if (st) {
+    const dot = document.getElementById('bot-dot');
+    const tag = document.getElementById('bot-tag');
+    const status = document.getElementById('bot-status');
+    if (st.online) { dot.classList.remove('off'); status.textContent = 'Online'; }
+    tag.textContent = st.tag || 'Bot';
+  }
+
+  // load guilds
+  const data = await api('GET', '/api/guilds');
+  if (data && Array.isArray(data)) {
+    guilds = data;
+    const sel = document.getElementById('sel-guild');
+    guilds.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.id; opt.textContent = g.name;
+      sel.appendChild(opt);
+    });
+    if (guilds.length === 1) { sel.value = guilds[0].id; loadChannels(); }
+  }
+
+  // color presets
+  const colors = ['#ff2d95','#5865f2','#22c55e','#f59e0b','#f43f5e','#06b6d4','#8b5cf6','#ffffff','#000000'];
+  const row = document.getElementById('color-presets');
+  colors.forEach(c => {
+    const chip = document.createElement('div');
+    chip.className = 'color-chip' + (c === selectedColor ? ' sel' : '');
+    chip.style.background = c;
+    chip.style.border = c === '#ffffff' ? '1px solid #333' : '';
+    chip.onclick = () => setColor(c);
+    row.appendChild(chip);
+  });
+
+  updatePreview();
+}
+
+async function loadChannels() {
+  const guildId = document.getElementById('sel-guild').value;
+  const selCh = document.getElementById('sel-channel');
+  const selRole = document.getElementById('sel-role');
+  selCh.innerHTML = '<option value="">— เลือก Channel —</option>';
+  selRole.innerHTML = '<option value="">— ไม่ mention role —</option>';
+  if (!guildId) return;
+
+  const chs = await api('GET', `/api/channels/${guildId}`);
+  if (chs && Array.isArray(chs)) {
+    channels = chs;
+    chs.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id; opt.textContent = `# ${c.name}`;
+      selCh.appendChild(opt);
+    });
+  }
+  const rs = await api('GET', `/api/roles/${guildId}`);
+  if (rs && Array.isArray(rs)) {
+    roles = rs;
+    rs.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.id; opt.textContent = `@${r.name}`;
+      selRole.appendChild(opt);
+    });
+  }
+}
+
+// ── COLOR ──
+function setColor(hex) {
+  if (!hex || hex.length < 4) return;
+  if (!hex.startsWith('#')) hex = '#' + hex;
+  selectedColor = hex;
+  document.getElementById('color-picker').value = hex.length === 7 ? hex : '#5865f2';
+  document.getElementById('color-hex').value = hex;
+  document.querySelectorAll('.color-chip').forEach(c => {
+    c.classList.toggle('sel', c.style.background === hex || c.style.backgroundColor === hex);
+  });
+  document.getElementById('prev-embed').style.borderLeftColor = hex;
+}
+
+// ── TOGGLE ──
+function toggleEmbed() {
+  const on = document.getElementById('chk-embed').checked;
+  document.getElementById('embed-fields').style.display = on ? '' : 'none';
+  document.getElementById('plain-fields').style.display = on ? 'none' : '';
+  updatePreview();
+}
+function toggleSchedule() {
+  const on = document.getElementById('chk-schedule').checked;
+  document.getElementById('schedule-fields').style.display = on ? '' : 'none';
+}
+
+// ── MENTION ──
+function getMention() {
+  const parts = [];
+  if (document.getElementById('chk-everyone').checked) parts.push('@everyone');
+  if (document.getElementById('chk-here').checked) parts.push('@here');
+  const roleId = document.getElementById('sel-role').value;
+  if (roleId) parts.push(`<@&${roleId}>`);
+  const custom = document.getElementById('inp-mention-custom').value.trim();
+  if (custom && !roleId) parts.push(custom.startsWith('<') ? custom : `<@&${custom}>`);
+  return parts.join(' ');
+}
+function updateMentionPreview() { updatePreview(); }
+
+// ── PREVIEW ──
+function updatePreview() {
+  const isEmbed = document.getElementById('chk-embed').checked;
+  const title = document.getElementById('inp-title').value;
+  const desc = document.getElementById('inp-embeddesc').value;
+  const msg = document.getElementById('inp-message').value;
+  const imgUrl = document.getElementById('inp-imageurl').value;
+  const mention = getMention();
+
+  // mention
+  const prevMention = document.getElementById('prev-mention');
+  prevMention.innerHTML = mention ? mention.replace(/@(everyone|here)/g, '<span class="dc-mention">@$1</span>') : '';
+
+  // embed or plain
+  const prevEmbed = document.getElementById('prev-embed');
+  const prevPlain = document.getElementById('prev-plain');
+  if (isEmbed) {
+    prevEmbed.style.display = ''; prevPlain.style.display = 'none';
+    const titleEl = document.getElementById('prev-title');
+    titleEl.textContent = title; titleEl.style.display = title ? '' : 'none';
+    document.getElementById('prev-desc').textContent = desc;
+    prevEmbed.style.borderLeftColor = selectedColor;
+    const imgEl = document.getElementById('prev-img');
+    if (imgUrl) { document.getElementById('prev-img-el').src = imgUrl; imgEl.style.display = ''; }
+    else imgEl.style.display = 'none';
+  } else {
+    prevEmbed.style.display = 'none'; prevPlain.style.display = msg ? '' : 'none';
+    prevPlain.textContent = msg;
+  }
+}
+
+// ── FILE UPLOAD ──
+function handleFileSelect(files) {
+  uploadFiles(Array.from(files));
+}
+function onDragOver(e) { e.preventDefault(); document.getElementById('upload-zone').classList.add('drag'); }
+function onDragLeave(e) { document.getElementById('upload-zone').classList.remove('drag'); }
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('upload-zone').classList.remove('drag');
+  uploadFiles(Array.from(e.dataTransfer.files));
+}
+async function uploadFiles(files) {
+  if (!files.length) return;
+  toast('กำลังอัปโหลด...', 'info');
+  const form = new FormData();
+  files.forEach(f => form.append('files', f));
+  try {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'x-panel-secret': SECRET },
+      body: form,
+    });
+    const data = await res.json();
+    if (data.ok) {
+      uploadedFiles.push(...data.files);
+      renderFileList();
+      toast(`อัปโหลดสำเร็จ ${data.files.length} ไฟล์ ✅`, 'ok');
+    } else toast('อัปโหลดล้มเหลว', 'err');
+  } catch(e) { toast('อัปโหลดล้มเหลว', 'err'); }
+}
+function renderFileList() {
+  const el = document.getElementById('file-list');
+  if (!uploadedFiles.length) { el.innerHTML = ''; return; }
+  el.innerHTML = uploadedFiles.map((f, i) => {
+    const isImg = f.mimetype && f.mimetype.startsWith('image/');
+    const icon = isImg ? '🖼️' : '📄';
+    const size = f.size < 1024*1024 ? (f.size/1024).toFixed(1)+'KB' : (f.size/1024/1024).toFixed(1)+'MB';
+    return `<div class="file-item">
+      <span class="file-icon">${icon}</span>
+      <div class="file-info"><div class="file-name">${esc(f.originalname)}</div><div class="file-size">${size}</div></div>
+      ${isImg ? `<img src="${f.url}" style="width:40px;height:40px;object-fit:cover;border-radius:6px">` : ''}
+      <button class="file-del" onclick="removeFile(${i})">✕</button>
+    </div>`;
+  }).join('');
+}
+function removeFile(i) { uploadedFiles.splice(i, 1); renderFileList(); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── SEND ──
+async function sendAnnouncement() {
+  const channelId = document.getElementById('sel-channel').value;
+  if (!channelId) { toast('กรุณาเลือก Channel ก่อน', 'err'); return; }
+
+  const isEmbed = document.getElementById('chk-embed').checked;
+  const title = document.getElementById('inp-title').value.trim();
+  const embedDesc = document.getElementById('inp-embeddesc').value.trim();
+  const message = document.getElementById('inp-message').value.trim();
+  const footer = document.getElementById('inp-footer').value.trim();
+  const imageUrl = document.getElementById('inp-imageurl').value.trim();
+  const thumbnailUrl = document.getElementById('inp-thumbnail').value.trim();
+  const mention = getMention();
+
+  if (isEmbed && !title && !embedDesc && !uploadedFiles.length) {
+    toast('กรุณาใส่หัวข้อหรือข้อความ', 'err'); return;
+  }
+  if (!isEmbed && !message && !uploadedFiles.length) {
+    toast('กรุณาใส่ข้อความ', 'err'); return;
+  }
+
+  let scheduledAt = null;
+  if (document.getElementById('chk-schedule').checked) {
+    const val = document.getElementById('inp-schedule').value;
+    if (!val) { toast('กรุณาเลือกวันและเวลา', 'err'); return; }
+    // datetime-local is local time, add +07:00
+    scheduledAt = new Date(val + ':00+07:00').toISOString();
+    if (new Date(scheduledAt) <= new Date()) { toast('เวลาที่เลือกผ่านไปแล้ว', 'err'); return; }
+  }
+
+  const btn = document.getElementById('btn-send');
+  btn.disabled = true; btn.textContent = '⏳ กำลังส่ง...';
+
+  const payload = {
+    channelId, mention,
+    title: isEmbed ? title : '',
+    embedDesc: isEmbed ? embedDesc : '',
+    message: isEmbed ? '' : message,
+    color: isEmbed ? selectedColor : '',
+    footer: isEmbed ? footer : '',
+    imageUrl: isEmbed ? imageUrl : '',
+    thumbnailUrl: isEmbed ? thumbnailUrl : '',
+    attachments: uploadedFiles,
+    scheduledAt,
+  };
+
+  const res = await api('POST', '/api/announce', payload);
+  btn.disabled = false; btn.textContent = '📣 ส่งประกาศ';
+
+  if (res && res.ok) {
+    if (res.scheduled) {
+      const d = new Date(scheduledAt);
+      toast(`✅ กำหนดเวลาแล้ว — ${d.toLocaleString('th-TH')}`, 'ok');
+    } else {
+      toast('✅ ส่งประกาศสำเร็จ!', 'ok');
+    }
+  } else {
+    toast('❌ ส่งไม่สำเร็จ', 'err');
+  }
+}
+
+// ── CLEAR ──
+function clearForm() {
+  document.getElementById('inp-title').value = '';
+  document.getElementById('inp-embeddesc').value = '';
+  document.getElementById('inp-message').value = '';
+  document.getElementById('inp-footer').value = '';
+  document.getElementById('inp-imageurl').value = '';
+  document.getElementById('inp-thumbnail').value = '';
+  document.getElementById('inp-mention-custom').value = '';
+  document.getElementById('chk-everyone').checked = false;
+  document.getElementById('chk-here').checked = false;
+  document.getElementById('chk-schedule').checked = false;
+  document.getElementById('schedule-fields').style.display = 'none';
+  uploadedFiles = []; renderFileList();
+  setColor('#5865f2');
+  updatePreview();
+  toast('ล้างฟอร์มแล้ว', 'info');
+}
+
+// ── SCHEDULED LIST ──
+async function loadScheduled() {
+  const el = document.getElementById('sched-list');
+  el.innerHTML = '<div style="color:var(--text3);font-size:13px">กำลังโหลด...</div>';
+  const list = await api('GET', '/api/scheduled');
+  if (!list || !list.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:20px;text-align:center">📭 ไม่มีประกาศที่กำหนดเวลาไว้</div>';
+    return;
+  }
+  el.innerHTML = list.map(item => {
+    const d = new Date(item.scheduledAt);
+    const dateStr = d.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+    const ch = channels.find(c => c.id === item.channelId);
+    const chName = ch ? `#${ch.name}` : `<#${item.channelId}>`;
+    return `<div class="sched-item">
+      <span class="sched-id">${item.id}</span>
+      <div class="sched-info">
+        <div class="sched-time">⏰ ${dateStr}</div>
+        <div class="sched-ch">${esc(chName)} ${item.title ? '— '+esc(item.title) : item.embedDesc ? '— '+esc(item.embedDesc.slice(0,40)) : ''}</div>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="cancelScheduled('${item.id}')">ยกเลิก</button>
+    </div>`;
+  }).join('');
+}
+
+async function cancelScheduled(id) {
+  if (!confirm('ยกเลิกประกาศนี้?')) return;
+  const res = await api('DELETE', `/api/scheduled/${id}`);
+  if (res && res.ok) { toast('ยกเลิกแล้ว ✅', 'ok'); loadScheduled(); }
+  else toast('ยกเลิกไม่สำเร็จ', 'err');
+}
+
+init();
+</script>
+</body>
+</html>
