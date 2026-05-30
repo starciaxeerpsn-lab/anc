@@ -224,18 +224,8 @@ code{background:var(--card2);padding:1px 6px;border-radius:5px;font-family:'DM M
     </div>
     <div id="schedule-fields" style="display:none">
       <div class="date-input-wrap">
-        <label>วันที่ (เวลาไทย)</label>
-        <input type="date" class="inp" id="inp-date" oninput="updateSchedulePreview()">
-      </div>
-      <div class="schedule-grid">
-        <div class="time-part">
-          <label>ชั่วโมง</label>
-          <select class="time-select" id="sel-hour" onchange="updateSchedulePreview()"></select>
-        </div>
-        <div class="time-part">
-          <label>นาที</label>
-          <select class="time-select" id="sel-minute" onchange="updateSchedulePreview()"></select>
-        </div>
+        <label>วันที่และเวลา (เวลาไทย UTC+7)</label>
+        <input type="datetime-local" class="inp" id="inp-datetime" oninput="updateSchedulePreview()" style="font-size:16px;padding:14px;">
       </div>
       <div class="schedule-preview" id="schedule-preview"></div>
     </div>
@@ -260,9 +250,10 @@ code{background:var(--card2);padding:1px 6px;border-radius:5px;font-family:'DM M
     </div>
   </div>
 
-  <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px">
+  <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px;flex-wrap:wrap">
     <button class="btn btn-ghost" onclick="clearForm()">🗑️ ล้างฟอร์ม</button>
-    <button class="btn btn-pk" id="btn-send" onclick="sendAnnouncement()">📣 ส่งประกาศ</button>
+    <button class="btn btn-ghost" id="btn-send-now" onclick="sendNow()" style="border-color:var(--green);color:var(--green)">⚡ ส่งเดี๋ยวนี้</button>
+    <button class="btn btn-pk" id="btn-send" onclick="sendAnnouncement()">📣 ส่งตามเวลา</button>
   </div>
 </div>
 
@@ -307,34 +298,27 @@ function switchTab(id,el){
 }
 
 function initScheduleSelects(){
-  const hourSel=document.getElementById('sel-hour');
-  const minSel=document.getElementById('sel-minute');
-  for(let h=0;h<24;h++){const o=document.createElement('option');o.value=h;o.textContent=String(h).padStart(2,'0')+' น.';hourSel.appendChild(o);}
-  for(let m=0;m<60;m+=5){const o=document.createElement('option');o.value=m;o.textContent=String(m).padStart(2,'0');minSel.appendChild(o);}
+  // set default to now+1hr Thai time
   const now=new Date(Date.now()+7*3600*1000);
   const y=now.getUTCFullYear(),mo=String(now.getUTCMonth()+1).padStart(2,'0'),d=String(now.getUTCDate()).padStart(2,'0');
-  document.getElementById('inp-date').value=`${y}-${mo}-${d}`;
-  hourSel.value=(now.getUTCHours()+1)%24;minSel.value=0;
+  const h=String((now.getUTCHours()+1)%24).padStart(2,'0');
+  document.getElementById('inp-datetime').value=`${y}-${mo}-${d}T${h}:00`;
 }
 
 function updateSchedulePreview(){
-  const date=document.getElementById('inp-date').value;
-  const hour=document.getElementById('sel-hour').value;
-  const min=document.getElementById('sel-minute').value;
+  const val=document.getElementById('inp-datetime').value;
   const prev=document.getElementById('schedule-preview');
-  if(!date){prev.style.display='none';return;}
-  const dt=new Date(`${date}T${String(hour).padStart(2,'0')}:${String(min).padStart(2,'0')}:00+07:00`);
+  if(!val){prev.style.display='none';return;}
+  const dt=new Date(val+'+07:00');
   if(isNaN(dt)){prev.style.display='none';return;}
   prev.style.display='block';
   prev.textContent='⏰ จะส่งเวลา: '+dt.toLocaleString('th-TH',{timeZone:'Asia/Bangkok',year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'});
 }
 
 function getScheduledAt(){
-  const date=document.getElementById('inp-date').value;
-  const hour=document.getElementById('sel-hour').value;
-  const min=document.getElementById('sel-minute').value;
-  if(!date)return null;
-  return new Date(`${date}T${String(hour).padStart(2,'0')}:${String(min).padStart(2,'0')}:00+07:00`).toISOString();
+  const val=document.getElementById('inp-datetime').value;
+  if(!val)return null;
+  return new Date(val+'+07:00').toISOString();
 }
 
 async function init(){
@@ -509,6 +493,7 @@ function clearForm(){
   document.getElementById('chk-here').checked=false;
   document.getElementById('chk-schedule').checked=false;
   document.getElementById('schedule-fields').style.display='none';
+  document.getElementById('schedule-preview').style.display='none';
   uploadedFiles=[];renderFileList();setColor('#5865f2');updatePreview();
   toast('ล้างฟอร์มแล้ว','info');
 }
@@ -532,6 +517,28 @@ async function cancelScheduled(id){
   const res=await api('DELETE',`/api/scheduled/${id}`);
   if(res&&res.ok){toast('ยกเลิกแล้ว ✅','ok');loadScheduled();}
   else toast('ยกเลิกไม่สำเร็จ','err');
+}
+
+async function sendNow(){
+  const channelId=document.getElementById('sel-channel').value;
+  if(!channelId){toast('กรุณาเลือก Channel ก่อน','err');return;}
+  const isEmbed=document.getElementById('chk-embed').checked;
+  const title=document.getElementById('inp-title').value.trim();
+  const embedDesc=document.getElementById('inp-embeddesc').value.trim();
+  const message=document.getElementById('inp-message').value.trim();
+  const footer=document.getElementById('inp-footer').value.trim();
+  const imageUrl=document.getElementById('inp-imageurl').value.trim();
+  const thumbnailUrl=document.getElementById('inp-thumbnail').value.trim();
+  const mention=getMention();
+  if(isEmbed&&!title&&!embedDesc&&!uploadedFiles.length){toast('กรุณาใส่หัวข้อหรือข้อความ','err');return;}
+  if(!isEmbed&&!message&&!uploadedFiles.length){toast('กรุณาใส่ข้อความ','err');return;}
+  const btn=document.getElementById('btn-send-now');
+  btn.disabled=true;btn.textContent='⏳ กำลังส่ง...';
+  const payload={channelId,mention,title:isEmbed?title:'',embedDesc:isEmbed?embedDesc:'',message:isEmbed?'':message,color:isEmbed?selectedColor:'',footer:isEmbed?footer:'',imageUrl:isEmbed?imageUrl:'',thumbnailUrl:isEmbed?thumbnailUrl:'',attachments:uploadedFiles,scheduledAt:null};
+  const res=await api('POST','/api/announce',payload);
+  btn.disabled=false;btn.textContent='⚡ ส่งเดี๋ยวนี้';
+  if(res&&res.ok)toast('✅ ส่งประกาศสำเร็จ!','ok');
+  else toast('❌ ส่งไม่สำเร็จ','err');
 }
 
 init();
