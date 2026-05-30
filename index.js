@@ -12,7 +12,8 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const OWNER_ID = process.env.OWNER_ID || "";
 const PORT = process.env.PORT || 3000;
-const PANEL_SECRET = process.env.PANEL_SECRET || crypto.randomBytes(16).toString("hex");
+
+let PANEL_SECRET = process.env.PANEL_SECRET || "";
 
 // ── REDIS ──
 const redis = new Redis({
@@ -37,6 +38,7 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
 // ── SCHEDULED ANNOUNCEMENTS ──
 const SCHEDULE_KEY = "announce:scheduled";
+const SECRET_KEY = "announce:panel_secret";
 const scheduledTimers = new Map();
 
 async function getScheduled() {
@@ -50,6 +52,21 @@ async function saveScheduled(list) {
   await redis.set(SCHEDULE_KEY, JSON.stringify(list));
 }
 
+async function initPanelSecret() {
+  if (PANEL_SECRET) return;
+  try {
+    const saved = await redis.get(SECRET_KEY);
+    if (saved) {
+      PANEL_SECRET = saved;
+    } else {
+      PANEL_SECRET = crypto.randomBytes(16).toString("hex");
+      await redis.set(SECRET_KEY, PANEL_SECRET);
+    }
+  } catch {
+    PANEL_SECRET = crypto.randomBytes(16).toString("hex");
+  }
+}
+
 async function scheduleAnnouncement(item) {
   const delay = new Date(item.scheduledAt).getTime() - Date.now();
   if (delay <= 0) {
@@ -58,7 +75,6 @@ async function scheduleAnnouncement(item) {
   }
   const timer = setTimeout(async () => {
     await sendAnnouncement(item);
-    // remove from list
     const list = await getScheduled();
     await saveScheduled(list.filter(i => i.id !== item.id));
     scheduledTimers.delete(item.id);
@@ -74,10 +90,8 @@ async function sendAnnouncement(item) {
     const files = [];
     const messagePayload = {};
 
-    // mention
     if (item.mention) messagePayload.content = item.mention;
 
-    // embed or plain
     if (item.title || item.color || item.embedDesc) {
       const embed = new EmbedBuilder();
       if (item.title) embed.setTitle(item.title);
@@ -92,7 +106,6 @@ async function sendAnnouncement(item) {
       messagePayload.content = (messagePayload.content ? messagePayload.content + "\n" : "") + item.message;
     }
 
-    // local file attachments
     if (item.attachments && item.attachments.length > 0) {
       for (const att of item.attachments) {
         const filePath = path.join(uploadsDir, att.filename);
@@ -110,12 +123,11 @@ async function sendAnnouncement(item) {
   }
 }
 
-// reload scheduled on boot
 async function loadScheduledOnBoot() {
   const list = await getScheduled();
   const now = Date.now();
   const future = list.filter(i => new Date(i.scheduledAt).getTime() > now);
-  if (future.length !== list.length) await saveScheduled(future); // clean past
+  if (future.length !== list.length) await saveScheduled(future);
   for (const item of future) await scheduleAnnouncement(item);
   console.log(`[announce] loaded ${future.length} scheduled announcements`);
 }
@@ -126,14 +138,12 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(uploadsDir));
 
-// ── AUTH MIDDLEWARE ──
 function requirePanelAuth(req, res, next) {
   const secret = req.headers["x-panel-secret"] || req.query.secret;
   if (secret !== PANEL_SECRET) return res.status(401).json({ error: "Unauthorized" });
   next();
 }
 
-// ── API: get guilds & channels ──
 app.get("/api/guilds", requirePanelAuth, (req, res) => {
   const guilds = client.guilds.cache.map(g => ({ id: g.id, name: g.name }));
   res.json(guilds);
@@ -143,9 +153,19 @@ app.get("/api/channels/:guildId", requirePanelAuth, (req, res) => {
   const guild = client.guilds.cache.get(req.params.guildId);
   if (!guild) return res.status(404).json({ error: "Guild not found" });
   const channels = guild.channels.cache
-    .filter(c => c.type === 0) // text channels only
-    .map(c => ({ id: c.id, name: c.name, category: c.parent?.name || "—" }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .filter(c => c.type === 0 || c.type === 5) // text + announcement channels
+    .map(c => ({
+      id: c.id,
+      name: c.name,
+      category: c.parent?.name || "—",
+      type: c.type,
+    }))
+    .sort((a, b) => {
+      const catA = a.category || "";
+      const catB = b.category || "";
+      if (catA !== catB) return catA.localeCompare(catB);
+      return a.name.localeCompare(b.name);
+    });
   res.json(channels);
 });
 
@@ -159,7 +179,6 @@ app.get("/api/roles/:guildId", requirePanelAuth, (req, res) => {
   res.json(roles);
 });
 
-// ── API: upload file ──
 app.post("/api/upload", requirePanelAuth, upload.array("files", 10), (req, res) => {
   if (!req.files || !req.files.length) return res.status(400).json({ error: "No files" });
   const result = req.files.map(f => ({
@@ -172,7 +191,6 @@ app.post("/api/upload", requirePanelAuth, upload.array("files", 10), (req, res) 
   res.json({ ok: true, files: result });
 });
 
-// ── API: send announcement ──
 app.post("/api/announce", requirePanelAuth, async (req, res) => {
   const { channelId, message, title, embedDesc, color, footer, imageUrl, thumbnailUrl, mention, attachments, scheduledAt } = req.body;
   if (!channelId) return res.status(400).json({ error: "channelId required" });
@@ -197,13 +215,11 @@ app.post("/api/announce", requirePanelAuth, async (req, res) => {
   res.json({ ok: true, scheduled: false, id: item.id });
 });
 
-// ── API: list scheduled ──
 app.get("/api/scheduled", requirePanelAuth, async (req, res) => {
   const list = await getScheduled();
   res.json(list);
 });
 
-// ── API: cancel scheduled ──
 app.delete("/api/scheduled/:id", requirePanelAuth, async (req, res) => {
   const { id } = req.params;
   const timer = scheduledTimers.get(id);
@@ -212,12 +228,6 @@ app.delete("/api/scheduled/:id", requirePanelAuth, async (req, res) => {
   const newList = list.filter(i => i.id !== id);
   await saveScheduled(newList);
   res.json({ ok: true, deleted: list.length !== newList.length });
-});
-
-// ── API: panel secret (for slash command link) ──
-app.get("/api/panel-url", requirePanelAuth, (req, res) => {
-  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
-  res.json({ url: `${baseUrl}/panel.html?secret=${PANEL_SECRET}` });
 });
 
 app.get("/api/status", (req, res) => {
@@ -229,7 +239,6 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
 
-  // permission check — only admins
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && interaction.user.id !== OWNER_ID) {
     return interaction.reply({ content: "❌ คุณไม่มีสิทธิ์ใช้คำสั่งนี้", ephemeral: true });
   }
@@ -279,7 +288,6 @@ client.on("interactionCreate", async (interaction) => {
     const fileAtt = interaction.options.getAttachment("file");
 
     const attachments = [];
-    // download attachments to local
     if (imageAtt || fileAtt) {
       const fetch = (await import("node-fetch")).default;
       for (const att of [imageAtt, fileAtt].filter(Boolean)) {
@@ -293,7 +301,6 @@ client.on("interactionCreate", async (interaction) => {
 
     let scheduledAt = null;
     if (scheduleStr) {
-      // parse Thai time (UTC+7)
       const d = new Date(scheduleStr + " +07:00");
       if (!isNaN(d)) scheduledAt = d.toISOString();
     }
@@ -323,12 +330,13 @@ client.on("interactionCreate", async (interaction) => {
 // ── START ──
 client.once("ready", async () => {
   console.log(`✅ Announce Bot ready: ${client.user.tag}`);
+  await initPanelSecret();
   await loadScheduledOnBoot();
+  console.log(`🔑 Panel secret: ${PANEL_SECRET}`);
 });
 
 client.login(DISCORD_TOKEN);
 
 app.listen(PORT, () => {
   console.log(`🌐 Panel running on port ${PORT}`);
-  console.log(`🔑 Panel secret: ${PANEL_SECRET}`);
 });
