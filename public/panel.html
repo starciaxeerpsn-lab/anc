@@ -478,7 +478,7 @@ async function sendAnnouncement(){
   const imageUrl=document.getElementById('inp-imageurl').value.trim();
   const thumbnailUrl=document.getElementById('inp-thumbnail').value.trim();
   const mention=getMention();
-  if(isEmbed&&!title&&!embedDesc&&!uploadedFiles.length&&!mention){toast('กรุณาใส่หัวข้อ, ข้อความ หรือแนบไฟล์','err');return;}
+  if(isEmbed&&!embedDesc&&!uploadedFiles.length&&!mention){toast('กรุณาใส่ข้อความ หรือแนบไฟล์','err');return;}
   if(!isEmbed&&!message&&!uploadedFiles.length&&!mention){toast('กรุณาใส่ข้อความหรือแนบไฟล์','err');return;}
   let scheduledAt=null;
   if(document.getElementById('chk-schedule').checked){
@@ -540,7 +540,7 @@ async function sendNow(){
   const imageUrl=document.getElementById('inp-imageurl').value.trim();
   const thumbnailUrl=document.getElementById('inp-thumbnail').value.trim();
   const mention=getMention();
-  if(isEmbed&&!title&&!embedDesc&&!uploadedFiles.length&&!mention){toast('กรุณาใส่หัวข้อ, ข้อความ หรือแนบไฟล์','err');return;}
+  if(isEmbed&&!embedDesc&&!uploadedFiles.length&&!mention){toast('กรุณาใส่ข้อความ หรือแนบไฟล์','err');return;}
   if(!isEmbed&&!message&&!uploadedFiles.length&&!mention){toast('กรุณาใส่ข้อความหรือแนบไฟล์','err');return;}
   const btn=document.getElementById('btn-send-now');
   btn.disabled=true;btn.textContent='⏳ กำลังส่ง...';
