@@ -153,7 +153,7 @@ app.get("/api/channels/:guildId", requirePanelAuth, (req, res) => {
   const guild = client.guilds.cache.get(req.params.guildId);
   if (!guild) return res.status(404).json({ error: "Guild not found" });
   const channels = guild.channels.cache
-    .filter(c => c.type === 0 || c.type === 5) // text + announcement channels
+    .filter(c => [0, 5, 10, 11, 12, 15, 16].includes(c.type))
     .map(c => ({
       id: c.id,
       name: c.name,
