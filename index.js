@@ -92,7 +92,7 @@ async function sendAnnouncement(item) {
 
     if (item.mention) messagePayload.content = item.mention;
 
-    if (item.title || item.color || item.embedDesc) {
+    if (item.title || item.embedDesc) {
       const embed = new EmbedBuilder();
       if (item.title) embed.setTitle(item.title);
       if (item.embedDesc) embed.setDescription(item.embedDesc);
