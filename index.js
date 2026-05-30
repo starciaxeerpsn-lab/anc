@@ -335,6 +335,16 @@ client.once("ready", async () => {
   console.log(`🔑 Panel secret: ${PANEL_SECRET}`);
 });
 
+// ── KEEP ALIVE (prevent Render free tier spin down) ──
+const https = require("https");
+setInterval(() => {
+  const url = process.env.BASE_URL;
+  if (!url) return;
+  https.get(url + "/api/status", (res) => {
+    console.log(`[keepalive] ping ${res.statusCode}`);
+  }).on("error", () => {});
+}, 10 * 60 * 1000); // ทุก 10 นาที
+
 client.login(DISCORD_TOKEN);
 
 app.listen(PORT, () => {
