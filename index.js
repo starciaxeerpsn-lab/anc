@@ -138,6 +138,10 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(uploadsDir));
 
+app.get("/", (req, res) => {
+  res.redirect("/panel.html");
+});
+
 function requirePanelAuth(req, res, next) {
   const secret = req.headers["x-panel-secret"] || req.query.secret;
   if (secret !== PANEL_SECRET) return res.status(401).json({ error: "Unauthorized" });
