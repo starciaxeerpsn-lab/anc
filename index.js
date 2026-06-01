@@ -1,356 +1,543 @@
-// ── ANNOUNCE BOT — index.js ──
-const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits, AttachmentBuilder } = require("discord.js");
-const express = require("express");
-const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
-const { Redis } = require("@upstash/redis");
+require('dotenv').config();
+const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { Redis } = require('@upstash/redis');
+const http = require('http');
 
-// ── ENV ──
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const OWNER_ID = process.env.OWNER_ID || "";
-const PORT = process.env.PORT || 3000;
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+  ],
+});
 
-let PANEL_SECRET = process.env.PANEL_SECRET || "";
-
-// ── REDIS ──
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
-// ── DISCORD CLIENT ──
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
-});
+// ── config ────────────────────────────────────────────────
+const PREFIX        = process.env.PREFIX || '!';
+const LOG_CHANNEL   = process.env.LOG_CHANNEL_ID;
+const SPAM_CHANNELS = (process.env.SPAM_CHANNEL_ID || '')
+  .split(',').map(id => id.trim()).filter(Boolean);
+const CACHE_TTL     = 30;
+const SNIPE_CD      = 5000;
+const RAID_WINDOW   = 10;
+const RAID_THRESH   = 5;
+const NUKE_THRESH   = 3;
 
-// ── UPLOAD DIR ──
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const SPAM_MSG_LIMIT  = 1;
+const SPAM_WINDOW_SEC = 5;
+const WARN_BEFORE_BAN = 0;
 
-const storage = multer.diskStorage({
-  destination: uploadsDir,
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString("hex")}${path.extname(file.originalname)}`),
-});
-const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
+const INVITE_REGEX    = /discord(?:\.gg|(?:app)?\.com\/invite)\/([a-zA-Z0-9\-]+)/gi;
+const ALLOWED_INVITES = (process.env.ALLOWED_INVITES || '')
+  .split(',').map(c => c.trim().toLowerCase()).filter(Boolean);
 
-// ── SCHEDULED ANNOUNCEMENTS ──
-const SCHEDULE_KEY = "announce:scheduled";
-const SECRET_KEY = "announce:panel_secret";
-const scheduledTimers = new Map();
+// ── anti-token grabber config ──────────────────────────────
+// โทเคน Discord จริงมี 3 ส่วนคั่นด้วย . (base64.base64.base64)
+const TOKEN_REGEX = /[MN][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}/g;
 
-async function getScheduled() {
-  try {
-    const raw = await redis.get(SCHEDULE_KEY);
-    if (!raw) return [];
-    return typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch { return []; }
+// domains ที่รู้จักว่าเป็น token grabber / IP logger / phishing
+const GRABBER_DOMAINS = [
+  // token grabbers / stealers ที่พบบ่อย
+  'grabify.link','iplogger.org','iplogger.com','2no.co','yip.su',
+  'ps3cfw.com','loveget.ga','blasze.com','leakinfo.net',
+  'discord-nitro.gift','discordnitro.gift','dlscord.com','dicsord.com',
+  'steamcommunity.ru','steamcornmunity.com','freestuff.gg',
+  'discord-app.com','discord-gifts.com','disccord.com',
+  'luna.fyi','ngrok.io','ngrok.app',            // tunnel ที่ใช้ host grabber
+  'webhook.site','pipedream.net',               // webhook collectors
+  // URL shortener ที่ใช้ซ่อนลิงก์อันตราย
+  'bit.ly','tinyurl.com','rebrand.ly','cutt.ly',
+  't.co','rb.gy','is.gd','v.gd','gg.gg',
+];
+
+// คำที่มักอยู่ใน path ของ grabber script
+const GRABBER_PATH_PATTERNS = [
+  /\/token/i, /\/grab/i, /\/steal/i, /\/webhook/i,
+  /\/nitro/i, /\/gift/i, /\/free/i, /\/giveaway/i,
+  /login\.php/i, /auth\.php/i,
+];
+
+// ── in-memory cache สำหรับ log channel (ไม่ต้อง fetch ทุกครั้ง) ──
+const logChannelCache = new Map(); // guildId → channel | null
+
+// ── helpers ───────────────────────────────────────────────
+function getLog(guild) {
+  if (!guild) return null;
+  if (logChannelCache.has(guild.id)) return logChannelCache.get(guild.id);
+  const ch = guild.channels.cache.get(LOG_CHANNEL) ?? null;
+  logChannelCache.set(guild.id, ch);
+  return ch;
 }
-async function saveScheduled(list) {
-  await redis.set(SCHEDULE_KEY, JSON.stringify(list));
+
+function embed(color, title, desc) {
+  return new EmbedBuilder().setColor(color).setTitle(title).setDescription(desc).setTimestamp();
 }
 
-async function initPanelSecret() {
-  if (PANEL_SECRET) return;
-  try {
-    const saved = await redis.get(SECRET_KEY);
-    if (saved) {
-      PANEL_SECRET = saved;
-    } else {
-      PANEL_SECRET = crypto.randomBytes(16).toString("hex");
-      await redis.set(SECRET_KEY, PANEL_SECRET);
+function isMod(member) {
+  if (!member) return false;
+  return member.permissions.has(PermissionsBitField.Flags.ManageGuild);
+}
+
+// ── logAction แบบ fire-and-forget (ไม่ await ในสายหลัก) ──
+function logAction(userId, guildId, action) {
+  if (!userId || !guildId) return;
+  const key  = `userlog:${guildId}:${userId}`;
+  const line = `[${new Date().toISOString()}] ${action}`;
+  // pipeline 3 คำสั่งรวมกันในครั้งเดียว
+  redis.pipeline()
+    .lpush(key, line)
+    .ltrim(key, 0, 49)
+    .expire(key, 60 * 60 * 24 * 7)
+    .exec()
+    .catch(() => {});
+}
+
+// ── anti-spam ──────────────────────────────────────────────
+async function checkSpam(msg) {
+  const key   = `spam:${msg.guild.id}:${msg.author.id}`;
+  const count = await redis.incr(key);
+  if (count === 1) redis.expire(key, SPAM_WINDOW_SEC).catch(() => {});
+  if (count < SPAM_MSG_LIMIT) return;
+
+  logAction(msg.author.id, msg.guild.id, `SPAM detected (${count} ข้อความใน ${SPAM_WINDOW_SEC} วิ)`);
+  console.log(`[Anti-Spam] ${msg.author.tag} spam ×${count} in ${msg.guild.name}`);
+
+  const warnKey = `spamwarn:${msg.guild.id}:${msg.author.id}`;
+  const warns   = await redis.incr(warnKey);
+  redis.expire(warnKey, 60 * 60 * 24).catch(() => {});
+
+  const log = getLog(msg.guild);
+
+  if (warns <= WARN_BEFORE_BAN) {
+    // ลบข้อความ + warn พร้อมกัน
+    const [msgs] = await Promise.allSettled([
+      msg.channel.messages.fetch({ limit: 20 }),
+    ]);
+    if (msgs.status === 'fulfilled') {
+      const toDelete = msgs.value.filter(m => m.author.id === msg.author.id && Date.now() - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000);
+      (toDelete.size > 1 ? msg.channel.bulkDelete(toDelete) : msg.delete()).catch(() => {});
     }
-  } catch {
-    PANEL_SECRET = crypto.randomBytes(16).toString("hex");
+    const warnMsg = await msg.channel.send({ embeds: [
+      embed('#FEE75C', '⚠️ คำเตือน',
+        `<@${msg.author.id}> หยุดส่งสแปม! (เตือนครั้งที่ ${warns}/${WARN_BEFORE_BAN})\nอีก ${WARN_BEFORE_BAN - warns + 1} ครั้งจะถูกแบนอัตโนมัติ`)
+    ]});
+    setTimeout(() => warnMsg.delete().catch(() => {}), 8000);
+    log?.send({ embeds: [embed('#FEE75C', '⚠️ Spam Warn',
+      `**${msg.author.tag}** (\`${msg.author.id}\`) ถูกเตือนสแปมใน <#${msg.channel.id}> (ครั้งที่ ${warns})`)] });
+  } else {
+    try {
+      // ban + ลบข้อความ + log พร้อมกัน
+      await msg.member.ban({ deleteMessageSeconds: 3600, reason: `Auto-ban: spam (${warns} ครั้ง)` });
+      const banEmbed = embed('#ED4245', '🔨 Auto Ban — Spam',
+        `**${msg.author.tag}** (\`${msg.author.id}\`) ถูก ban เนื่องจากสแปมซ้ำ ${warns} ครั้ง ในห้อง <#${msg.channel.id}>`);
+      // ทำทั้งสองอย่างพร้อมกัน
+      await Promise.allSettled([
+        log ? log.send({ embeds: [banEmbed] }) : msg.channel.send({ embeds: [banEmbed] }).catch(() => {}),
+        redis.del(warnKey),
+        msg.channel.messages.fetch({ limit: 20 }).then(msgs => {
+          const toDelete = msgs.filter(m => m.author.id === msg.author.id && Date.now() - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000);
+          return toDelete.size > 1 ? msg.channel.bulkDelete(toDelete) : msg.delete().catch(() => {});
+        }).catch(() => {}),
+      ]);
+    } catch (err) {
+      console.error(`[Anti-Spam] Ban failed for ${msg.author.tag}:`, err.message);
+      const failEmbed = embed('#ED4245', '❌ Ban Failed',
+        `ไม่สามารถ ban **${msg.author.tag}** (\`${msg.author.id}\`) ได้\nสาเหตุ: \`${err.message}\`\n\nตรวจสอบ: role บอทต้องอยู่เหนือ role ของ user + มีสิทธิ์ Ban Members`);
+      (log ? log.send({ embeds: [failEmbed] }) : msg.channel.send({ embeds: [failEmbed] })).catch(() => {});
+    }
   }
 }
 
-async function scheduleAnnouncement(item) {
-  const delay = new Date(item.scheduledAt).getTime() - Date.now();
-  if (delay <= 0) {
-    await sendAnnouncement(item);
-    return;
+// ── anti-invite link ───────────────────────────────────────
+async function checkInvite(msg) {
+  const matches = [...msg.content.matchAll(INVITE_REGEX)];
+  if (!matches.length) return;
+
+  const blocked = matches.filter(m => !ALLOWED_INVITES.includes(m[1].toLowerCase()));
+  if (!blocked.length) return;
+
+  // ลบข้อความทันที (fire-and-forget)
+  msg.delete().catch(() => {});
+  logAction(msg.author.id, msg.guild.id,
+    `ส่ง invite link ที่ไม่ได้รับอนุญาต: ${blocked.map(m => m[0]).join(', ')}`);
+
+  const warnKey = `invwarn:${msg.guild.id}:${msg.author.id}`;
+  const warns   = await redis.incr(warnKey);
+  redis.expire(warnKey, 60 * 60 * 24).catch(() => {});
+
+  const log = getLog(msg.guild);
+
+  if (warns <= WARN_BEFORE_BAN) {
+    const warnMsg = await msg.channel.send({ embeds: [
+      embed('#FEE75C', '⚠️ คำเตือน',
+        `<@${msg.author.id}> ห้ามส่งลิงก์เชิญดิสคอร์ดในเซิร์ฟนี้! (ครั้งที่ ${warns}/${WARN_BEFORE_BAN})\nอีก ${WARN_BEFORE_BAN - warns + 1} ครั้งจะถูกแบนอัตโนมัติ`)
+    ]});
+    setTimeout(() => warnMsg.delete().catch(() => {}), 8000);
+    log?.send({ embeds: [embed('#FEE75C', '⚠️ Invite Link Warn',
+      `**${msg.author.tag}** (\`${msg.author.id}\`) ส่ง invite ที่ไม่ได้รับอนุญาตใน <#${msg.channel.id}> (ครั้งที่ ${warns})\n\`${blocked.map(m => m[0]).join(', ')}\``)] });
+  } else {
+    try {
+      await msg.member.ban({ deleteMessageSeconds: 3600, reason: `Auto-ban: invite link (${warns} ครั้ง)` });
+      const banEmbed = embed('#ED4245', '🔨 Auto Ban — Invite Link',
+        `**${msg.author.tag}** (\`${msg.author.id}\`) ถูก ban เนื่องจากส่ง invite link ซ้ำ ${warns} ครั้ง`);
+      await Promise.allSettled([
+        (log ? log.send({ embeds: [banEmbed] }) : msg.channel.send({ embeds: [banEmbed] })).catch(() => {}),
+        redis.del(warnKey),
+      ]);
+    } catch (err) {
+      console.error(`[Anti-Invite] Ban failed for ${msg.author.tag}:`, err.message);
+      const failEmbed = embed('#ED4245', '❌ Ban Failed',
+        `ไม่สามารถ ban **${msg.author.tag}** (\`${msg.author.id}\`) ได้\nสาเหตุ: \`${err.message}\`\n\nตรวจสอบ: role บอทต้องอยู่เหนือ role ของ user + มีสิทธิ์ Ban Members`);
+      (log ? log.send({ embeds: [failEmbed] }) : msg.channel.send({ embeds: [failEmbed] })).catch(() => {});
+    }
   }
-  const timer = setTimeout(async () => {
-    await sendAnnouncement(item);
-    const list = await getScheduled();
-    await saveScheduled(list.filter(i => i.id !== item.id));
-    scheduledTimers.delete(item.id);
-  }, delay);
-  scheduledTimers.set(item.id, timer);
 }
 
-async function sendAnnouncement(item) {
-  try {
-    const channel = await client.channels.fetch(item.channelId).catch(() => null);
-    if (!channel) return console.warn(`[announce] channel ${item.channelId} not found`);
+// ── anti-token grabber ─────────────────────────────────────
+async function checkTokenGrabber(msg) {
+  const content = msg.content;
+  const reasons = [];
 
-    const files = [];
-    const messagePayload = {};
+  // 1) ตรวจ Discord token จริงหลุดในข้อความ
+  const tokenMatches = content.match(TOKEN_REGEX);
+  if (tokenMatches) {
+    reasons.push(`พบ Discord Token ในข้อความ (${tokenMatches.length} รายการ)`);
+  }
 
-    if (item.mention) messagePayload.content = item.mention;
+  // 2) ตรวจ URL ในข้อความ
+  const urlMatches = [...content.matchAll(/https?:\/\/([^\s/]+)(\/[^\s]*)?/gi)];
+  for (const match of urlMatches) {
+    const domain = match[1].toLowerCase().replace(/^www\./, '');
+    const path   = match[2] || '';
 
-    if (item.title || item.embedDesc) {
-      const embed = new EmbedBuilder();
-      if (item.title) embed.setTitle(item.title);
-      if (item.embedDesc) embed.setDescription(item.embedDesc);
-      if (item.color) embed.setColor(item.color);
-      if (item.footer) embed.setFooter({ text: item.footer });
-      if (item.imageUrl) embed.setImage(item.imageUrl);
-      if (item.thumbnailUrl) embed.setThumbnail(item.thumbnailUrl);
-      embed.setTimestamp();
-      messagePayload.embeds = [embed];
-    } else if (item.message) {
-      messagePayload.content = (messagePayload.content ? messagePayload.content + "\n" : "") + item.message;
+    // ตรวจ domain blacklist
+    if (GRABBER_DOMAINS.some(d => domain === d || domain.endsWith('.' + d))) {
+      reasons.push(`พบ domain อันตราย: \`${domain}\``);
     }
 
-    if (item.attachments && item.attachments.length > 0) {
-      for (const att of item.attachments) {
-        const filePath = path.join(uploadsDir, att.filename);
-        if (fs.existsSync(filePath)) {
-          files.push(new AttachmentBuilder(filePath, { name: att.originalname || att.filename }));
-        }
+    // ตรวจ path pattern ที่น่าสงสัย
+    for (const pattern of GRABBER_PATH_PATTERNS) {
+      if (pattern.test(path)) {
+        reasons.push(`พบ URL pattern อันตราย: \`${match[0].slice(0, 60)}\``);
+        break;
       }
-      if (files.length > 0) messagePayload.files = files;
     }
 
-    await channel.send(messagePayload);
-    console.log(`[announce] sent to #${channel.name}`);
-  } catch (err) {
-    console.error("[announce] send error:", err);
+    // ตรวจ Discord webhook URL (ไม่ควรส่งใน chat)
+    if (/discord(?:app)?\.com\/api\/webhooks\//i.test(match[0])) {
+      reasons.push(`พบ Discord Webhook URL (อาจใช้ดึงข้อมูล)`);
+    }
   }
-}
 
-async function loadScheduledOnBoot() {
-  const list = await getScheduled();
-  const now = Date.now();
-  const future = list.filter(i => new Date(i.scheduledAt).getTime() > now);
-  if (future.length !== list.length) await saveScheduled(future);
-  for (const item of future) await scheduleAnnouncement(item);
-  console.log(`[announce] loaded ${future.length} scheduled announcements`);
-}
+  if (!reasons.length) return;
 
-// ── EXPRESS APP ──
-const app = express();
-app.use(express.json({ limit: "50mb" }));
-app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(uploadsDir));
+  // ลบข้อความทันที (fire-and-forget)
+  msg.delete().catch(() => {});
+  logAction(msg.author.id, msg.guild.id,
+    `TOKEN GRABBER DETECTED: ${reasons.join(' | ')}`);
+  console.log(`[Anti-Token] ${msg.author.tag} — ${reasons.join(', ')}`);
 
-app.get("/", (req, res) => {
-  res.redirect("/panel.html");
-});
+  const log = getLog(msg.guild);
 
-function requirePanelAuth(req, res, next) {
-  const secret = req.headers["x-panel-secret"] || req.query.secret;
-  if (secret !== PANEL_SECRET) return res.status(401).json({ error: "Unauthorized" });
-  next();
-}
+  // เตือนใน log channel
+  const alertEmbed = new EmbedBuilder()
+    .setColor('#ED4245')
+    .setTitle('🚨 Token Grabber Detected')
+    .setDescription([
+      `**ผู้ส่ง:** ${msg.author.tag} (\`${msg.author.id}\`) → <@${msg.author.id}>`,
+      `**ห้อง:** <#${msg.channel.id}>`,
+      `**เหตุผล:**\n${reasons.map(r => `> • ${r}`).join('\n')}`,
+      '',
+      `**ข้อความ (ถูกลบแล้ว):**\n\`\`\`${content.slice(0, 300).replace(/`/g, '\'')}\`\`\``,
+    ].join('\n'))
+    .setTimestamp();
 
-app.get("/api/guilds", requirePanelAuth, (req, res) => {
-  const guilds = client.guilds.cache.map(g => ({ id: g.id, name: g.name }));
-  res.json(guilds);
-});
-
-app.get("/api/channels/:guildId", requirePanelAuth, (req, res) => {
-  const guild = client.guilds.cache.get(req.params.guildId);
-  if (!guild) return res.status(404).json({ error: "Guild not found" });
-  const channels = guild.channels.cache
-    .filter(c => [0, 5, 10, 11, 12, 15, 16].includes(c.type))
-    .map(c => ({
-      id: c.id,
-      name: c.name,
-      category: c.parent?.name || "—",
-      type: c.type,
-    }))
-    .sort((a, b) => {
-      const catA = a.category || "";
-      const catB = b.category || "";
-      if (catA !== catB) return catA.localeCompare(catB);
-      return a.name.localeCompare(b.name);
+  // แบนทันทีเลย เพราะ token grabber = เจตนาร้ายชัดเจน
+  try {
+    await msg.member.ban({
+      deleteMessageSeconds: 3600,
+      reason: `Auto-ban: Token Grabber — ${reasons[0]}`,
     });
-  res.json(channels);
+    alertEmbed.addFields({ name: '🔨 ดำเนินการ', value: '**Ban ถาวรอัตโนมัติแล้ว**' });
+  } catch (err) {
+    alertEmbed.addFields({
+      name: '❌ Ban ไม่สำเร็จ',
+      value: `\`${err.message}\`\nตรวจสอบ role บอทและสิทธิ์ Ban Members`,
+    });
+  }
+
+  (log
+    ? log.send({ embeds: [alertEmbed] })
+    : msg.channel.send({ embeds: [alertEmbed] })
+  ).catch(() => {});
+}
+
+// ── events ────────────────────────────────────────────────
+client.on('messageDelete', async (msg) => {
+  if (msg.author?.bot) return;
+  // snipe + log พร้อมกัน
+  await Promise.allSettled([
+    redis.set(`snipe:${msg.channel.id}`, JSON.stringify({
+      content: msg.content || '[embed/attachment]',
+      author: msg.author?.tag,
+      avatar: msg.author?.displayAvatarURL(),
+    }), { ex: CACHE_TTL }),
+    (async () => {
+      logAction(msg.author?.id, msg.guild?.id, `ลบข้อความใน #${msg.channel.name}: "${msg.content?.slice(0, 80)}"`);
+      if (msg.mentions.users.size > 0 || msg.mentions.roles.size > 0) {
+        logAction(msg.author?.id, msg.guild?.id, `GHOST PING ใน #${msg.channel.name}`);
+        getLog(msg.guild)?.send({ embeds: [embed('#ED4245', '👻 Ghost Ping',
+          `**${msg.author?.tag}** (\`${msg.author?.id}\`) ping แล้วลบใน <#${msg.channel.id}>\n\`${msg.content}\``)] });
+      }
+    })(),
+    redis.sismember(`watchlist:${msg.guild?.id}`, msg.author?.id).then(inWatch => {
+      if (inWatch) {
+        getLog(msg.guild)?.send({ embeds: [embed('#FEE75C', '👁 Watchlist Alert — ลบข้อความ',
+          `**${msg.author?.tag}** (\`${msg.author?.id}\`) ลบข้อความใน <#${msg.channel.id}>\n\`${msg.content?.slice(0, 200)}\``)] });
+      }
+    }),
+  ]);
 });
 
-app.get("/api/roles/:guildId", requirePanelAuth, (req, res) => {
-  const guild = client.guilds.cache.get(req.params.guildId);
-  if (!guild) return res.status(404).json({ error: "Guild not found" });
-  const roles = guild.roles.cache
-    .filter(r => r.name !== "@everyone")
-    .map(r => ({ id: r.id, name: r.name, color: r.hexColor }))
-    .sort((a, b) => b.position - a.position);
-  res.json(roles);
+client.on('messageUpdate', async (oldMsg, newMsg) => {
+  if (oldMsg.author?.bot || oldMsg.content === newMsg.content) return;
+  redis.set(`editsnipe:${oldMsg.channel.id}`, JSON.stringify({
+    before: oldMsg.content, after: newMsg.content,
+    author: oldMsg.author?.tag, avatar: oldMsg.author?.displayAvatarURL(),
+  }), { ex: CACHE_TTL }).catch(() => {});
+  logAction(oldMsg.author?.id, oldMsg.guild?.id,
+    `แก้ข้อความใน #${oldMsg.channel.name}: "${oldMsg.content?.slice(0, 60)}" → "${newMsg.content?.slice(0, 60)}"`);
 });
 
-app.post("/api/upload", requirePanelAuth, upload.array("files", 10), (req, res) => {
-  if (!req.files || !req.files.length) return res.status(400).json({ error: "No files" });
-  const result = req.files.map(f => ({
-    filename: f.filename,
-    originalname: f.originalname,
-    size: f.size,
-    mimetype: f.mimetype,
-    url: `/uploads/${f.filename}`,
-  }));
-  res.json({ ok: true, files: result });
+client.on('guildMemberAdd', async (member) => {
+  logAction(member.user.id, member.guild.id,
+    `เข้าเซิร์ฟ (บัญชีอายุ ${Math.floor((Date.now() - member.user.createdTimestamp) / 86400000)} วัน)`);
+
+  const key   = `joins:${member.guild.id}`;
+  const count = await redis.incr(key);
+  if (count === 1) redis.expire(key, RAID_WINDOW).catch(() => {});
+
+  // ตรวจ raid + watchlist พร้อมกัน
+  const [, watchResult] = await Promise.allSettled([
+    count >= RAID_THRESH
+      ? getLog(member.guild)?.send({ embeds: [embed('#ED4245', '🚨 Raid Detected',
+          `มีคนเข้าเซิร์ฟ **${count}** คนใน ${RAID_WINDOW} วิ\nใช้ \`${PREFIX}lockdown\` ถ้าจำเป็น`)] })
+      : Promise.resolve(),
+    redis.sismember(`watchlist:${member.guild.id}`, member.user.id),
+  ]);
+
+  if (watchResult.status === 'fulfilled' && watchResult.value) {
+    getLog(member.guild)?.send({ embeds: [embed('#FEE75C', '👁 Watchlist Alert — เข้าเซิร์ฟ',
+      `**${member.user.tag}** (\`${member.user.id}\`) ที่อยู่ใน watchlist เพิ่งเข้าเซิร์ฟ!`)] });
+  }
 });
 
-app.post("/api/announce", requirePanelAuth, async (req, res) => {
-  const { channelId, message, title, embedDesc, color, footer, imageUrl, thumbnailUrl, mention, attachments, scheduledAt } = req.body;
-  if (!channelId) return res.status(400).json({ error: "channelId required" });
+client.on('channelDelete', async (channel) => {
+  const key   = `nukes:${channel.guild?.id}`;
+  const count = await redis.incr(key);
+  if (count === 1) redis.expire(key, 10).catch(() => {});
+  if (count >= NUKE_THRESH) {
+    const log = channel.guild?.channels.cache.get(LOG_CHANNEL);
+    log?.send({ embeds: [embed('#ED4245', '💣 Nuke Attempt',
+      `ลบห้องไปแล้ว **${count}** ห้องใน 10 วิ — ตรวจสอบ Audit Log ทันที!\nใช้ \`${PREFIX}lockdown\` ฉุกเฉิน`)] });
+  }
+});
 
-  const item = {
-    id: crypto.randomBytes(6).toString("hex"),
-    channelId, message, title, embedDesc, color, footer,
-    imageUrl, thumbnailUrl, mention, attachments: attachments || [],
-    scheduledAt: scheduledAt || null,
-    createdAt: new Date().toISOString(),
+// ── commands ──────────────────────────────────────────────
+client.on('messageCreate', async (msg) => {
+  if (msg.author.bot) return;
+
+  // guard ก่อน: ถ้าเป็น mod ข้ามการตรวจทั้งหมด
+  const isModUser = isMod(msg.member);
+
+  if (!isModUser) {
+    // ตรวจ token grabber ก่อนเลย (อันตรายที่สุด → ban ทันที)
+    await checkTokenGrabber(msg);
+
+    // ตรวจ spam + invite พร้อมกัน (parallel) ไม่รอสายใดสายนึงก่อน
+    const inSpamChannel = !SPAM_CHANNELS.length || SPAM_CHANNELS.includes(msg.channel.id);
+    const checks = [];
+    if (inSpamChannel) checks.push(checkSpam(msg));
+    checks.push(checkInvite(msg));
+    await Promise.allSettled(checks);
+  }
+
+  // logAction fire-and-forget (ไม่ต้อง await)
+  logAction(msg.author.id, msg.guild?.id, `ส่งข้อความใน #${msg.channel.name}: "${msg.content.slice(0, 80)}"`);
+
+  if (!msg.content.startsWith(PREFIX)) return;
+  const [cmd, ...args] = msg.content.slice(1).trim().split(/\s+/);
+  const cooldowns = client.cooldowns || (client.cooldowns = new Map());
+
+  const checkCD = () => {
+    const last = cooldowns.get(msg.author.id) || 0;
+    const diff = Date.now() - last;
+    if (diff < SNIPE_CD) { msg.reply(`⏳ cooldown อีก ${Math.ceil((SNIPE_CD - diff) / 1000)} วิ`); return false; }
+    cooldowns.set(msg.author.id, Date.now());
+    return true;
   };
 
-  if (scheduledAt && new Date(scheduledAt).getTime() > Date.now()) {
-    const list = await getScheduled();
-    list.push(item);
-    await saveScheduled(list);
-    await scheduleAnnouncement(item);
-    return res.json({ ok: true, scheduled: true, id: item.id, scheduledAt });
+  // !snipe
+  if (cmd === 'snipe') {
+    if (!checkCD()) return;
+    const raw = await redis.get(`snipe:${msg.channel.id}`);
+    if (!raw) return msg.reply('ไม่มีข้อความที่ถูกลบใน 30 วิที่ผ่านมา');
+    const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return msg.channel.send({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('Delete Snipe')
+      .setAuthor({ name: d.author, iconURL: d.avatar }).setDescription(d.content).setTimestamp()] });
   }
 
-  await sendAnnouncement(item);
-  res.json({ ok: true, scheduled: false, id: item.id });
-});
-
-app.get("/api/scheduled", requirePanelAuth, async (req, res) => {
-  const list = await getScheduled();
-  res.json(list);
-});
-
-app.delete("/api/scheduled/:id", requirePanelAuth, async (req, res) => {
-  const { id } = req.params;
-  const timer = scheduledTimers.get(id);
-  if (timer) { clearTimeout(timer); scheduledTimers.delete(id); }
-  const list = await getScheduled();
-  const newList = list.filter(i => i.id !== id);
-  await saveScheduled(newList);
-  res.json({ ok: true, deleted: list.length !== newList.length });
-});
-
-app.get("/api/status", (req, res) => {
-  res.json({ online: client.isReady(), tag: client.user?.tag || "Offline" });
-});
-
-// ── DISCORD SLASH COMMANDS ──
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const { commandName } = interaction;
-
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) && interaction.user.id !== OWNER_ID) {
-    return interaction.reply({ content: "❌ คุณไม่มีสิทธิ์ใช้คำสั่งนี้", ephemeral: true });
+  // !editsnipe
+  if (cmd === 'editsnipe') {
+    if (!checkCD()) return;
+    const raw = await redis.get(`editsnipe:${msg.channel.id}`);
+    if (!raw) return msg.reply('ไม่มีข้อความที่ถูก edit ใน 30 วิที่ผ่านมา');
+    const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return msg.channel.send({ embeds: [new EmbedBuilder().setColor('#FEE75C').setTitle('Edit Snipe')
+      .setAuthor({ name: d.author, iconURL: d.avatar })
+      .addFields({ name: 'ก่อน', value: d.before || '–' }, { name: 'หลัง', value: d.after || '–' })
+      .setTimestamp()] });
   }
 
-  if (commandName === "announce-panel") {
-    const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
-    const url = `${baseUrl}/panel.html?secret=${PANEL_SECRET}`;
-    return interaction.reply({
-      content: `🖥️ **Announce Panel**\n${url}\n\n⚠️ ลิงก์นี้ใช้ได้เฉพาะคุณ อย่าแชร์ให้คนอื่น`,
-      ephemeral: true,
-    });
+  // !whois
+  if (cmd === 'whois') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    const targetId = args[0]?.replace(/[<@!>]/g, '');
+    if (!targetId) return msg.reply('ระบุ user: `!whois @user`');
+    let member;
+    try { member = await msg.guild.members.fetch(targetId); } catch { return msg.reply('ไม่พบ user นี้'); }
+    // ดึง Redis หลายค่าพร้อมกัน
+    const [logsResult, spamWarnsResult, invWarnsResult] = await Promise.allSettled([
+      redis.lrange(`userlog:${msg.guild.id}:${targetId}`, 0, 9),
+      redis.get(`spamwarn:${msg.guild.id}:${targetId}`),
+      redis.get(`invwarn:${msg.guild.id}:${targetId}`),
+    ]);
+    const logs      = logsResult.status === 'fulfilled' ? (logsResult.value || []) : [];
+    const spamWarns = spamWarnsResult.status === 'fulfilled' ? (spamWarnsResult.value || 0) : 0;
+    const invWarns  = invWarnsResult.status === 'fulfilled' ? (invWarnsResult.value || 0) : 0;
+    return msg.channel.send({ embeds: [
+      new EmbedBuilder().setColor('#5865F2')
+        .setTitle(`🔍 ข้อมูล: ${member.user.tag}`)
+        .setThumbnail(member.user.displayAvatarURL())
+        .addFields(
+          { name: 'User ID',       value: `\`${member.user.id}\``, inline: true },
+          { name: 'อายุบัญชี',    value: `${Math.floor((Date.now() - member.user.createdTimestamp) / 86400000)} วัน`, inline: true },
+          { name: 'Spam warns',    value: `${spamWarns} ครั้ง`, inline: true },
+          { name: 'Invite warns',  value: `${invWarns} ครั้ง`, inline: true },
+          { name: 'เข้าเซิร์ฟ',  value: member.joinedAt?.toLocaleString('th-TH') || '?', inline: false },
+          { name: 'Roles',         value: member.roles.cache.filter(r => r.id !== msg.guild.id).map(r => r.name).join(', ') || 'ไม่มี' },
+          { name: '10 action ล่าสุด', value: logs.length ? logs.map((l, i) => `\`${i+1}.\` ${l}`).join('\n') : 'ไม่มี' },
+        )
+    ]});
   }
 
-  if (commandName === "announce-list") {
-    const list = await getScheduled();
-    if (!list.length) return interaction.reply({ content: "📭 ไม่มีประกาศที่กำหนดเวลาไว้", ephemeral: true });
-    const lines = list.map(i => {
-      const d = new Date(i.scheduledAt);
-      return `• \`${i.id}\` — <#${i.channelId}> — <t:${Math.floor(d.getTime()/1000)}:F>`;
-    });
-    return interaction.reply({ content: `📅 **ประกาศที่กำหนดเวลา:**\n${lines.join("\n")}`, ephemeral: true });
-  }
-
-  if (commandName === "announce-cancel") {
-    const id = interaction.options.getString("id");
-    const timer = scheduledTimers.get(id);
-    if (timer) { clearTimeout(timer); scheduledTimers.delete(id); }
-    const list = await getScheduled();
-    const newList = list.filter(i => i.id !== id);
-    await saveScheduled(newList);
-    const deleted = list.length !== newList.length;
-    return interaction.reply({
-      content: deleted ? `✅ ยกเลิกประกาศ \`${id}\` แล้ว` : `❌ ไม่พบประกาศ \`${id}\``,
-      ephemeral: true,
-    });
-  }
-
-  if (commandName === "announce") {
-    await interaction.deferReply({ ephemeral: true });
-    const channel = interaction.options.getChannel("channel");
-    const message = interaction.options.getString("message") || "";
-    const title = interaction.options.getString("title") || "";
-    const color = interaction.options.getString("color") || "#5865f2";
-    const scheduleStr = interaction.options.getString("schedule") || "";
-    const mention = interaction.options.getString("mention") || "";
-    const imageAtt = interaction.options.getAttachment("image");
-    const fileAtt = interaction.options.getAttachment("file");
-
-    const attachments = [];
-    if (imageAtt || fileAtt) {
-      const fetch = (await import("node-fetch")).default;
-      for (const att of [imageAtt, fileAtt].filter(Boolean)) {
-        const resp = await fetch(att.url);
-        const buf = await resp.buffer();
-        const filename = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}${path.extname(att.name)}`;
-        fs.writeFileSync(path.join(uploadsDir, filename), buf);
-        attachments.push({ filename, originalname: att.name, mimetype: att.contentType });
-      }
+  // !userlog
+  if (cmd === 'userlog') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    const uid = args[0]?.replace(/[<@!>]/g, '');
+    if (!uid) return msg.reply('ระบุ user: `!userlog @user`');
+    const logs = await redis.lrange(`userlog:${msg.guild.id}:${uid}`, 0, 49) || [];
+    if (!logs.length) return msg.reply('ไม่พบ log');
+    for (let i = 0; i < logs.length; i += 10) {
+      await msg.channel.send({ embeds: [embed('#5865F2', `📋 Log: ${uid}`,
+        logs.slice(i, i+10).map((l, j) => `\`${i+j+1}.\` ${l}`).join('\n'))] });
     }
+    return;
+  }
 
-    let scheduledAt = null;
-    if (scheduleStr) {
-      const d = new Date(scheduleStr + " +07:00");
-      if (!isNaN(d)) scheduledAt = d.toISOString();
+  // !watchlist
+  if (cmd === 'watchlist') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    const sub  = args[0];
+    const wkey = `watchlist:${msg.guild.id}`;
+    if (sub === 'add') {
+      const uid = args[1]?.replace(/[<@!>]/g, '');
+      await redis.sadd(wkey, uid);
+      return msg.reply(`✅ เพิ่ม \`${uid}\` ใน watchlist แล้ว`);
     }
-
-    const item = {
-      id: crypto.randomBytes(6).toString("hex"),
-      channelId: channel.id,
-      message, title, embedDesc: message, color, mention,
-      attachments, scheduledAt,
-      createdAt: new Date().toISOString(),
-    };
-
-    if (scheduledAt && new Date(scheduledAt).getTime() > Date.now()) {
-      const list = await getScheduled();
-      list.push(item);
-      await saveScheduled(list);
-      await scheduleAnnouncement(item);
-      const d = new Date(scheduledAt);
-      return interaction.editReply({ content: `✅ กำหนดประกาศไว้แล้ว <t:${Math.floor(d.getTime()/1000)}:F>\nID: \`${item.id}\`` });
+    if (sub === 'remove') {
+      const uid = args[1]?.replace(/[<@!>]/g, '');
+      await redis.srem(wkey, uid);
+      return msg.reply(`✅ ลบ \`${uid}\` ออกจาก watchlist แล้ว`);
     }
+    if (sub === 'list') {
+      const list = await redis.smembers(wkey) || [];
+      if (!list.length) return msg.reply('watchlist ว่างอยู่');
+      return msg.channel.send({ embeds: [embed('#FEE75C', '👁 Watchlist',
+        list.map(id => `<@${id}> (\`${id}\`)`).join('\n'))] });
+    }
+    return msg.reply('ใช้: `!watchlist add/remove/list`');
+  }
 
-    await sendAnnouncement(item);
-    interaction.editReply({ content: `✅ ส่งประกาศไปยัง <#${channel.id}> แล้ว` });
+  // !clearwarns
+  if (cmd === 'clearwarns') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    const uid = args[0]?.replace(/[<@!>]/g, '');
+    if (!uid) return msg.reply('ระบุ user: `!clearwarns @user`');
+    await Promise.allSettled([
+      redis.del(`spamwarn:${msg.guild.id}:${uid}`),
+      redis.del(`invwarn:${msg.guild.id}:${uid}`),
+    ]);
+    return msg.reply(`✅ ล้าง warns ทั้งหมดของ \`${uid}\` แล้ว (spam + invite)`);
+  }
+
+  // !allowedinvites
+  if (cmd === 'allowedinvites') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    if (!ALLOWED_INVITES.length) return msg.reply('ไม่มี invite ที่อนุญาตในขณะนี้ (ตั้งค่าใน .env → ALLOWED_INVITES)');
+    return msg.channel.send({ embeds: [embed('#57F287', '✅ Allowed Invites',
+      ALLOWED_INVITES.map(c => `discord.gg/${c}`).join('\n'))] });
+  }
+
+  // !lockdown / !unlock
+  if (cmd === 'lockdown') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    await msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: false });
+    return msg.reply('🔒 ล็อคห้องนี้แล้ว ใช้ `!unlock` เพื่อเปิด');
+  }
+  if (cmd === 'unlock') {
+    if (!isMod(msg.member)) return msg.reply('ไม่มีสิทธิ์');
+    await msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: null });
+    return msg.reply('🔓 เปิดห้องแล้ว');
+  }
+
+  // !help
+  if (cmd === 'help') {
+    return msg.channel.send({ embeds: [
+      new EmbedBuilder().setColor('#5865F2').setTitle('Security Bot — คำสั่ง')
+        .addFields(
+          { name: `\`${PREFIX}snipe\``,                value: 'ดูข้อความที่ถูกลบล่าสุด' },
+          { name: `\`${PREFIX}editsnipe\``,             value: 'ดูข้อความก่อน/หลัง edit' },
+          { name: `\`${PREFIX}whois @user\``,           value: 'ดู User ID, log, warns (mod)' },
+          { name: `\`${PREFIX}userlog @user\``,         value: 'ดู action log เต็ม 50 รายการ (mod)' },
+          { name: `\`${PREFIX}clearwarns @user\``,      value: 'ล้าง spam+invite warns (mod)' },
+          { name: `\`${PREFIX}allowedinvites\``,        value: 'ดู invite ที่อนุญาต (mod)' },
+          { name: `\`${PREFIX}watchlist add @user\``,   value: 'เพิ่มคนใน watchlist (mod)' },
+          { name: `\`${PREFIX}watchlist list\``,        value: 'ดู watchlist (mod)' },
+          { name: `\`${PREFIX}lockdown\``,              value: 'ล็อคห้อง (mod)' },
+          { name: `\`${PREFIX}unlock\``,                value: 'เปิดห้อง (mod)' },
+        )
+        .addFields({ name: '🛡️ Auto-Protection', value: '`Anti-Spam` `Anti-Invite` `Anti-TokenGrabber` `Ghost-Ping` `Raid-Detect` `Nuke-Detect`' })
+        .setFooter({ text: `Spam: ${SPAM_MSG_LIMIT} ข้อความ/${SPAM_WINDOW_SEC}วิ → warn×${WARN_BEFORE_BAN} → ban | Invite: warn×${WARN_BEFORE_BAN} → ban | Token Grabber → ban ทันที` })
+    ]});
   }
 });
 
-// ── START ──
-client.once("ready", async () => {
-  console.log(`✅ Announce Bot ready: ${client.user.tag}`);
-  await initPanelSecret();
-  await loadScheduledOnBoot();
-  console.log(`🔑 Panel secret: ${PANEL_SECRET}`);
+// ── keep-alive (Render Web Service) ───────────────────────
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('OK');
 });
 
-// ── KEEP ALIVE (prevent Render free tier spin down) ──
-const https = require("https");
-setInterval(() => {
-  const url = process.env.BASE_URL;
-  if (!url) return;
-  https.get(url + "/api/status", (res) => {
-    console.log(`[keepalive] ping ${res.statusCode}`);
-  }).on("error", () => {});
-}, 10 * 60 * 1000); // ทุก 10 นาที
-
-client.login(DISCORD_TOKEN);
-
-app.listen(PORT, () => {
-  console.log(`🌐 Panel running on port ${PORT}`);
+server.listen(process.env.PORT || 3000, () => {
+  console.log(`🌐 HTTP server listening on port ${process.env.PORT || 3000}`);
+  client.login(process.env.DISCORD_TOKEN);
 });
+
+client.once('ready', () => console.log(`✅ ${client.user.tag} online`));
