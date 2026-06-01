@@ -252,6 +252,7 @@ code{background:var(--card2);padding:1px 6px;border-radius:5px;font-family:'DM M
 
   <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:8px;flex-wrap:wrap">
     <button class="btn btn-ghost" onclick="clearForm()">🗑️ ล้างฟอร์ม</button>
+    <button class="btn btn-ghost" id="btn-send-rules" onclick="sendRules()" style="border-color:#9B59B6;color:#9B59B6">📜 ส่งกฎ</button>
     <button class="btn btn-ghost" id="btn-send-now" onclick="sendNow()" style="border-color:var(--green);color:var(--green)">⚡ ส่งเดี๋ยวนี้</button>
     <button class="btn btn-pk" id="btn-send" onclick="sendAnnouncement()">📣 ส่งตามเวลา</button>
   </div>
@@ -497,6 +498,18 @@ async function sendAnnouncement(){
   }else toast('❌ ส่งไม่สำเร็จ','err');
 }
 
+async function sendRules(){
+  const channelId=document.getElementById('sel-channel').value;
+  if(!channelId){toast('กรุณาเลือก Channel ก่อน','err');return;}
+  const btn=document.getElementById('btn-send-rules');
+  btn.disabled=true;btn.textContent='📜 กำลังส่ง...';
+  try{
+    const res=await api('POST','/api/send-rules',{channelId});
+    if(res&&res.ok){toast(`✅ ส่งกฎ ${res.count} embed เรียบร้อย!`,'ok');}
+    else{toast('เกิดข้อผิดพลาด: '+(res?.error||'unknown'),'err');}
+  }catch(e){toast('เกิดข้อผิดพลาด','err');}
+  btn.disabled=false;btn.textContent='📜 ส่งกฎ';
+}
 function clearForm(){
   ['inp-title','inp-embeddesc','inp-message','inp-footer','inp-imageurl','inp-thumbnail','inp-mention-custom'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('chk-everyone').checked=false;
